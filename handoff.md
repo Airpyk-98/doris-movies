@@ -53,6 +53,7 @@
 - **2026-10-26**: Deployed to Firebase Hosting (`https://story-to-film-epic-98.web.app`) and pushed full repository to GitHub (`https://github.com/Airpyk-98/story-to-film-epic`).
 - **2026-10-27**: Added `/api/hf/upload-reference` endpoint in `relay_space/app.py` (using temp-file-backed `HfApi.upload_file`) and isolated `KAGGLE_CONFIG_DIR` + `PYTHONUTF8=1` for reliable per-user Kaggle kernel pushes.
 - **2026-10-27**: Upgraded `kaggle_worker/kaggle_executor.py` and `relay_space/kaggle_executor.py` to use SSE streaming (`"stream": True`) with `(25, 90)` per-chunk read timeouts, live reasoning/token telemetry, and automatic fast-model fallbacks (`meta/llama-3.3-70b-instruct`, `deepseek-ai/deepseek-v3.1`, `qwen/qwen2.5-72b-instruct`, `meta/llama-3.1-70b-instruct`) so reasoning models like `z-ai/glm-5.3` never fail with a 120s read timeout on Stage 1.
+- **2026-10-27**: Fixed Stage 4 FFmpeg film stitcher (`stitch_videos_ffmpeg` in `kaggle_worker/kaggle_executor.py` and `relay_space/kaggle_executor.py`) to preserve and normalize scene voices & audio (`-c:a aac -b:a 192k -ar 44100 -ac 2`, with `anullsrc` fallback only if a clip lacks an audio stream) instead of stripping audio with `-an`.
 
 ---
 

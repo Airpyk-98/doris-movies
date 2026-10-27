@@ -634,8 +634,29 @@ def upload_to_hf(api: HfApi, local_path: str, remote_path: str) -> str:
     return f"https://huggingface.co/datasets/{HF_DATASET_REPO}/resolve/main/{quoted_remote}"
 
 
+def clip_has_audio(video_path: str) -> bool:
+    """Checks via ffprobe whether a video file contains an audio stream."""
+    try:
+        res = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "a",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                video_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+        return b"audio" in (res.stdout or b"").lower()
+    except Exception:
+        return True
+
+
 def stitch_videos_ffmpeg(video_paths: list, output_path: str, aspect_ratio: str, quality: str):
-    """Normalizes all scene clips to identical resolution/fps/audio and stitches them into a single coherent movie."""
+    """Normalizes all scene clips to identical resolution/fps/audio (preserving voices & sound) and stitches them into a single coherent movie."""
     check_cancel()
     if len(video_paths) == 1:
         shutil.copyfile(video_paths[0], output_path)
@@ -660,16 +681,40 @@ def stitch_videos_ffmpeg(video_paths: list, output_path: str, aspect_ratio: str,
             f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
             f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p"
         )
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", vp,
-            "-vf", vf,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "20",
-            "-an",
-            norm_p,
-        ]
+        has_audio = clip_has_audio(vp)
+        if has_audio:
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", vp,
+                "-vf", vf,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "20",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-ar", "44100",
+                "-ac", "2",
+                norm_p,
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", vp,
+                "-f", "lavfi",
+                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                "-vf", vf,
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "20",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-ar", "44100",
+                "-ac", "2",
+                "-shortest",
+                norm_p,
+            ]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         active_subprocesses.append(proc)
         _, stderr = proc.communicate()
@@ -690,7 +735,11 @@ def stitch_videos_ffmpeg(video_paths: list, output_path: str, aspect_ratio: str,
         "-f", "concat",
         "-safe", "0",
         "-i", concat_list_path,
-        "-c", "copy",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-ar", "44100",
+        "-ac", "2",
         "-movflags", "+faststart",
         output_path,
     ]

@@ -181,14 +181,88 @@ def check_cancel():
 
 
 # =====================================================================
-# 4. STAGE 1: NVIDIA NIM SCENE PLANNING ON KAGGLE SERVER
+# 4. STAGE 1: NVIDIA NIM SCENE PLANNING ON KAGGLE SERVER (SSE STREAMING + FALLBACK)
 # =====================================================================
+def call_nvidia_nim_streaming(model_id: str, system_prompt: str, user_prompt: str) -> str:
+    """Streams tokens from NVIDIA NIM so reasoning models (like z-ai/glm-5.3, deepseek-r1) never hit a read timeout."""
+    check_cancel()
+    headers = {
+        "Authorization": f"Bearer {NVIDIA_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    payload = {
+        "model": model_id,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.35,
+        "max_tokens": 8192,
+        "stream": True,
+    }
+
+    content_chunks = []
+    reasoning_chars = 0
+    last_report_time = time.time()
+
+    with requests.post(
+        "https://integrate.api.nvidia.com/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        stream=True,
+        timeout=(25, 90),
+    ) as resp:
+        if resp.status_code != 200:
+            err_body = resp.text[:400]
+            raise RuntimeError(f"NVIDIA NIM HTTP {resp.status_code} on {model_id}: {err_body}")
+
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            check_cancel()
+            if not raw_line:
+                continue
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            data_str = line[5:].strip()
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk_json = json.loads(data_str)
+                choices = chunk_json.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                r_piece = delta.get("reasoning_content") or ""
+                c_piece = delta.get("content") or ""
+                if r_piece:
+                    reasoning_chars += len(r_piece)
+                if c_piece:
+                    content_chunks.append(c_piece)
+
+                now = time.time()
+                if now - last_report_time >= 12:
+                    last_report_time = now
+                    total_c = sum(len(x) for x in content_chunks)
+                    append_log(
+                        f"[Stage 1] {model_id} streaming... (reasoning: {reasoning_chars} chars, output: {total_c} chars)"
+                    )
+                    update_firestore(
+                        12,
+                        f"Stage 1/4: {model_id} streaming scene plan ({total_c} chars generated)...",
+                    )
+            except Exception:
+                continue
+
+    return "".join(content_chunks).strip()
+
+
 def plan_scenes_with_nvidia(story: str, ref_tags: list, duration: int, aspect_ratio: str) -> list:
-    """Uses the user's NVIDIA API Key and chosen NVIDIA model on Kaggle to plan scenes."""
+    """Uses the user's NVIDIA API Key and chosen NVIDIA model on Kaggle to plan scenes, with automatic fallback."""
     append_log(f"[Stage 1] Planning story scenes on Kaggle via NVIDIA NIM ({NVIDIA_MODEL})...")
     update_firestore(8, f"Stage 1/4: Planning scenes with NVIDIA NIM ({NVIDIA_MODEL})...")
 
-    tag_names = [f"@{t['tag']}" for t in ref_tags if t.get("tag")]
+    tag_names = [f"@{t['tag'].lstrip('@')}" for t in ref_tags if t.get("tag")]
     tag_list_str = ", ".join(tag_names) if tag_names else "None provided"
 
     system_prompt = f"""You are an elite Hollywood Storyboard Director and AI Cinematographer for the "Story to Film" engine.
@@ -229,41 +303,45 @@ Target Aspect Ratio: {aspect_ratio}
 Scene Duration: {duration} seconds per scene
 Available Uploaded @Tags: {tag_list_str}
 
-Output the JSON array of planned scenes now:"""
+Output the JSON array of planned scenes now (be concise and output valid JSON immediately):"""
 
-    headers = {
-        "Authorization": f"Bearer {NVIDIA_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    payload = {
-        "model": NVIDIA_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.35,
-        "max_tokens": 4096,
-    }
+    candidate_models = [NVIDIA_MODEL]
+    for fb in ("meta/llama-3.3-70b-instruct", "deepseek-ai/deepseek-v3.1", "qwen/qwen2.5-72b-instruct", "meta/llama-3.1-70b-instruct"):
+        if fb not in candidate_models:
+            candidate_models.append(fb)
 
-    resp = requests.post(
-        "https://integrate.api.nvidia.com/v1/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=120,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f"NVIDIA NIM API Error ({resp.status_code}): {resp.text[:400]}")
+    raw_scenes = None
+    last_err = None
+    used_model = NVIDIA_MODEL
 
-    content = resp.json()["choices"][0]["message"]["content"].strip()
-    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    for model_try in candidate_models:
+        check_cancel()
+        try:
+            if model_try != NVIDIA_MODEL:
+                append_log(f"[Stage 1 Fallback] Retrying scene planning with fast model '{model_try}'...")
+                update_firestore(10, f"Stage 1/4: Retrying scene planning with {model_try}...")
 
-    match = re.search(r"\[.*\]", content, flags=re.DOTALL)
-    if not match:
-        raise RuntimeError(f"NVIDIA model did not return a JSON array. Raw output: {content[:300]}")
+            content = call_nvidia_nim_streaming(model_try, system_prompt, user_prompt)
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
-    raw_scenes = json.loads(match.group(0))
+            match = re.search(r"\[.*\]", content, flags=re.DOTALL)
+            if not match:
+                raise RuntimeError(f"Model {model_try} did not return a JSON array. Output: {content[:240]}")
+
+            parsed = json.loads(match.group(0))
+            if isinstance(parsed, list) and len(parsed) > 0:
+                raw_scenes = parsed
+                used_model = model_try
+                break
+        except Exception as e:
+            last_err = e
+            append_log(f"[Stage 1 Notice] {model_try} attempt issue: {e}")
+
+    if not raw_scenes:
+        raise RuntimeError(f"Scene planning failed across models. Last error: {last_err}")
+
     valid_tag_lookup = {f"@{t['tag'].lstrip('@')}".lower(): f"@{t['tag'].lstrip('@')}" for t in ref_tags if t.get("tag")}
+    bare_tag_lookup = {t['tag'].lstrip('@').lower(): f"@{t['tag'].lstrip('@')}" for t in ref_tags if t.get("tag")}
 
     planned = []
     for idx, sc in enumerate(raw_scenes, start=1):
@@ -279,8 +357,9 @@ Output the JSON array of planned scenes now:"""
                 if norm in valid_tag_lookup and valid_tag_lookup[norm] not in detected_tags:
                     detected_tags.append(valid_tag_lookup[norm])
 
-        for norm_low, canonical_tag in valid_tag_lookup.items():
-            if re.search(rf"{re.escape(norm_low)}\b", (img_p + " " + vid_p).lower()):
+        combined_lower = (img_p + " " + vid_p).lower()
+        for bare_low, canonical_tag in bare_tag_lookup.items():
+            if re.search(rf"@?{re.escape(bare_low)}\b", combined_lower):
                 if canonical_tag not in detected_tags:
                     detected_tags.append(canonical_tag)
 
@@ -298,7 +377,7 @@ Output the JSON array of planned scenes now:"""
             "error": "",
         })
 
-    append_log(f"[Stage 1 Complete] Planned {len(planned)} scenes ({len(planned) * duration}s total runtime) via {NVIDIA_MODEL}.")
+    append_log(f"[Stage 1 Complete] Planned {len(planned)} scenes ({len(planned) * duration}s total runtime) via {used_model}.")
     return planned
 
 

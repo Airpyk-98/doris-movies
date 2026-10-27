@@ -8,7 +8,7 @@
 - **Project Name**: Story to Film — Autonomous AI Cinema Studio
 - **Workspace**: `c:\Users\DELL\Desktop\FAC2`
 - **Date Created**: 2026-10-26
-- **Last Modified**: 2026-10-26 22:05
+- **Last Modified**: 2026-10-27 01:08
 - **Modus Operandi**: `epic-automate`
   - **Frontend**: Dedicated Brand-New Firebase Project (`story-to-film-epic-98`) on Firebase Hosting (`https://story-to-film-epic-98.web.app`).
   - **Design System**: Minimalist White (`#FFFFFF` / `#F8F8F5`), Signal Cinema Yellow (`#FACC15`), and Architectural Black (`#0A0A0A`) engineered with `ui-ux-pro-max`, `impeccable`, and `imagegen-frontend-mobile`.
@@ -51,6 +51,8 @@
 - **2026-10-26**: Built `kaggle_worker/kaggle_executor.py` implementing uninterrupted 4-stage execution (NVIDIA NIM planning + Anti-Flagging Sanitizer -> Kie.ai `@tag` reference images -> Kie.ai videos -> FFmpeg T4 film stitching -> Hugging Face Dataset upload + real-time Firestore reporting & cancellation watchdog).
 - **2026-10-26**: Built minimalist White, Signal Yellow, and Black frontend (`public/index.html`, `public/style.css`, `public/app.js`) featuring dynamic model presets, real-time Kie.ai credit cost estimator, per-user Kie.ai credit balance checker, NVIDIA model catalog loader, `@tag` multi-upload, and auto-downloading scene clips.
 - **2026-10-26**: Deployed to Firebase Hosting (`https://story-to-film-epic-98.web.app`) and pushed full repository to GitHub (`https://github.com/Airpyk-98/story-to-film-epic`).
+- **2026-10-27**: Added `/api/hf/upload-reference` endpoint in `relay_space/app.py` (using temp-file-backed `HfApi.upload_file`) and isolated `KAGGLE_CONFIG_DIR` + `PYTHONUTF8=1` for reliable per-user Kaggle kernel pushes.
+- **2026-10-27**: Upgraded `kaggle_worker/kaggle_executor.py` and `relay_space/kaggle_executor.py` to use SSE streaming (`"stream": True`) with `(25, 90)` per-chunk read timeouts, live reasoning/token telemetry, and automatic fast-model fallbacks (`meta/llama-3.3-70b-instruct`, `deepseek-ai/deepseek-v3.1`, `qwen/qwen2.5-72b-instruct`, `meta/llama-3.1-70b-instruct`) so reasoning models like `z-ai/glm-5.3` never fail with a 120s read timeout on Stage 1.
 
 ---
 

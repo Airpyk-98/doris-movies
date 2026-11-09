@@ -5,3 +5,8 @@ __pycache__/
 work_*/
 .env
 .env.local
+firebase_service_account.json
+PROJECT_HANDOFF_SECRETS.md
+*_secrets*
+*credentials*
+*.key
